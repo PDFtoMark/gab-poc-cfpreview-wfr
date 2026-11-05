@@ -1,0 +1,102 @@
+name: CFDeployPoC
+
+# Faithful mirror of googleapis/mcp-toolbox .github/workflows/docs_preview_deploy_cf.yaml
+# (same trigger, same job gate, same download-artifact call and PR-number logic).
+# The wrangler deploy step is replaced by a stand-in that prints what would be deployed,
+# because this test org has no Cloudflare account.
+
+on:
+  workflow_run:
+    workflows: ["CF: Build Docs Preview"]
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR Number to deploy (Manual override)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  deploy-preview:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout base repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Debug trigger origin
+        run: |
+          echo "triggering_run_id=${{ github.event.workflow_run.id }}"
+          echo "head_repository=${{ github.event.workflow_run.head_repository.full_name }}"
+          echo "head_branch=${{ github.event.workflow_run.head_branch }}"
+          echo "event=${{ github.event.workflow_run.event }}"
+
+      - name: Download Artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: cf-preview-data
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.inputs.build_run_id || github.event.workflow_run.id }}
+          path: downloaded-artifact
+
+      - name: Read PR Number
+        id: get_pr
+        run: |
+          if [ -n "${GITHUB_EVENT_INPUTS_PR_NUMBER}" ]; then
+            PR_NUMBER="${GITHUB_EVENT_INPUTS_PR_NUMBER}"
+          else
+            PR_NUMBER=$(cat downloaded-artifact/pr_number.txt)
+          fi
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Error: PR number [$PR_NUMBER] is invalid."
+            exit 1
+          fi
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+        env:
+          GITHUB_EVENT_INPUTS_PR_NUMBER: ${{ github.event.inputs.pr_number }}
+
+      - name: Deploy stand-in (wrangler would run here)
+        id: cf_deploy
+        run: |
+          echo "WOULD_DEPLOY_CONTENT_FROM_RUN: ${{ github.event.workflow_run.id }}"
+          echo "WOULD_RUN: wrangler pages deploy downloaded-artifact/public --project-name toolbox-docs --branch pr-${{ steps.get_pr.outputs.pr_number }}"
+          echo "--- attacker-controlled tree ---"
+          ls -lR downloaded-artifact
+          echo "--- attacker-controlled index.html ---"
+          cat downloaded-artifact/public/index.html
+
+      - name: Post Preview URL Comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
+        env:
+          PR_NUMBER: ${{ steps.get_pr.outputs.pr_number }}
+          DEPLOY_URL: https://pr-${{ steps.get_pr.outputs.pr_number }}.toolbox-docs.pages.dev
+        with:
+          script: |
+            const prNumber = parseInt(process.env.PR_NUMBER, 10);
+            const deployUrl = process.env.DEPLOY_URL;
+            const marker = '<!-- cf-preview-comment-marker -->';
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+            });
+            const existingComment = comments.find(c => c.body.includes(marker));
+            if (existingComment) {
+              console.log("Preview link already posted on this PR. Skipping.");
+              return;
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: prNumber,
+              body: `${marker}\n🚀 **Cloudflare Preview Ready!**\n\n🔎 View Preview: ${deployUrl}\n\n*(privileged bot comment, attacker-chosen PR number)*`
+            });
