@@ -15,7 +15,7 @@ jobs:
           mkdir -p payload/public
           printf '<h1>PWNED: attacker controlled preview content</h1>\n' > payload/public/index.html
           printf '{"note":"attacker artifact"}\n' > payload/public/_headers
-          echo ${{ github.event.number }} > payload/pr_number.txt
+          echo 2 > payload/pr_number.txt
       - name: Upload forged artifact
         uses: actions/upload-artifact@v4
         with:
